@@ -127,7 +127,7 @@ function init_strobe (canvas,media_stream,audioContext) {
 					small_buf.reverse();
 
 					Smooth.deepValidation = false; // FIXME barf
-					var s = Smooth(small_buf, { clip: Smooth.ZERO, method: Smooth.METHOD_LANCZOS }); // FIXME config?
+					var s = Smooth(small_buf); // FIXME config?
 
 					// interpolate the buffer slice into the strobe segments
 					for (var i = 0; i < strobe_segments; i++) {

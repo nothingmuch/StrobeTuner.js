@@ -42,7 +42,7 @@ function init_strobe (canvas,media_stream,audioContext) {
 		// e's buffer is only valid for the duration of the callback, so copy it over
 		// we keep two copies since we read in samples_per_strobe chunks
 		buffers.reverse();
-		buffers[1].set(e.inputBuffer.getChannelData(0));
+		buffers[1].set(e.inputBuffer.getChannelData(0)); // e.inputBuffer.copyFromChanel(buffers[1],0) broken in Chrome?
 
 		// decrement the buffer length from the time based offset of the strobe
 		strobe_delta_t -= ( e.playbackTime - buffer_t );
@@ -66,6 +66,7 @@ function init_strobe (canvas,media_stream,audioContext) {
 	gain.connect(proc);
 
 	// route output of streamprocessor to a null gain node and to the audio destination to force processing to actually happen
+	// apparently a bug in chrome
 	proc.connect(bit_bucket);
 	bit_bucket.connect(audioContext.destination);
 
@@ -75,7 +76,8 @@ function init_strobe (canvas,media_stream,audioContext) {
 	return {
 		canvas: canvas,
 		buffers: buffers,
-		processor: proc,
+		processor: proc, // GC bug in Chrome
+		media_stream: media_stream, // GC bug in FireFox
 		draw: function (raf_time ) {
 			// calculate how much time the strobe has gone forward since the last frame
 			var frame_duration = ( raf_time - last_frame ) / 1000;
@@ -104,7 +106,8 @@ function init_strobe (canvas,media_stream,audioContext) {
 				var bufer;
 				if ( offset_int + samples_per_strobe >= buffers[0].length && offset_int < buffers[0].length ) {
 					var diff = offset_int + samples_per_strobe - buffers[0].length;
-					// complex case of strobe sample... we could just skip one more strobe period forward i suppose ;-)
+					// complex case of strobe sample intersecting with buffer pair boundary...
+					// we could just skip one more strobe period forward i suppose ;-)
 					small_buf = Array.prototype.slice.call(buffers[0], offset_int);
 					Array.prototype.push.apply( small_buf, buffers[1], 0, diff);
 				} else {

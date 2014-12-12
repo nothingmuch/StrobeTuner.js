@@ -49,8 +49,6 @@ function init_strobe (canvas,media_stream,audioContext) {
 		buffer_t = e.playbackTime;
 	};
 
-	console.log("setting up ", proc);
-
 	var bandpass = audioContext.createBiquadFilter();
 	var gain = audioContext.createGain();
 	var bit_bucket = audioContext.createGain();

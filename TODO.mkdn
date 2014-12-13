@@ -1,0 +1,56 @@
+- refactor
+	- OO damnit!
+	- CoffeeScript? it's nice but maybe overkill...
+	- audiocontext stuff interfacing code should look more like AudioNode and AudioDestinationNode where appropriate (this applies more to future code than to existing code)
+	- stroboscopy and rendering should be decoupled
+- UI design
+	- presets
+		- single strobe, auto pitch or manual pitch
+		- bass 4+1 (4 fixed strobes + 1 chromatic auto/manual)
+		- guitar 6+1 (layout like a gibson style tuning head)
+		- 12+1 (C0 + octave switching? a la peterson HAL-9000)
+		- custom presets with JSON bookmarklets?
+	- specrogram? oscilloscope? could be nice to figure out whether pitch detection is trustworthy, but kind of excessive
+- settle on UI library
+	- jquery mobile? feels nice even on desktop, this approach seems to work for http://www.musictheory.net/exercises (similar UI, not jquery mobile though)
+- strobe tdisplay weaks
+	- octave (and overtone?) series
+	- frequency filtering (tighter bandpass? LPF for harmonics?)
+	- contrast? colors?
+		- [chroma.js](http://old.driven-by-data.net/about/chromajs/) nice but slow
+	- noise gate
+	- circular layout (radial gradient?)
+	- frequency shouldn't be assumed to be a constant
+- [pitch detection](https://ccrma.stanford.edu/~pdelac/154/m154paper.htm)
+	- decide whether to do once per buffer or once per frame?
+		- laziest is once per buffer but with caching until next frame reads pitch
+	- autocorrelation, YIN, Praat
+	- FFT
+		- AnalyserNode inappropriate
+			- freq domain resolution is 4hz max
+			- no way to do n-order FFTs
+			- alternatives:
+				- [Audiolet](https://github.com/oampo/Audiolet)
+				- [timbre.js](http://mohayonao.github.io/timbre.js/)
+				- [dsp.js](https://github.com/corbanbrook/dsp.js/)
+				- [nayuki](http://www.nayuki.io/page/free-small-fft-in-multiple-languages)
+				- [jsfft](https://github.com/dntj/jsfft)
+				- [fft.js](https://www.npmjs.com/package/fft)
+				- [fft.js](https://code.google.com/p/chromium/source/browse/trunk/samples/audio/lib/fft.js?r=2623)
+		- Cepstrum
+		- HPS
+			- Script processor node with offline audio context?
+			- replay captured buffer at 1/n for 1 .. m into FFT (m = 4-5?)
+			- collect result buffers and multiply together?
+			- should be simpler with Audiolet's DSP chains
+		- inharmonicity vs. percision?
+	- peak detection? zero crossing? probably not worth the effort
+- investigate ConvolverNode for high order FIR filters (narrow bandpass per strobe, etc)
+- pitch database
+	- names
+	- reference pitch
+	- transposing
+	- temperaments
+	- stretch tables ([entropy?](http://arxiv.org/pdf/1203.5101.pdf) also potentially applicable to guitar based on chords+positions)
+	- ship with a simple set of defaults but allow customization through JSON?
+- webgl instead of canvas? gradient doesn't seem performance limiting anymore

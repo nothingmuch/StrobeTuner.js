@@ -1,20 +1,24 @@
 var active_strobes = [];
 
 
-function init_stream (stream) {
+function init_stream (mediaStream) {
 	var audioContext = new (window.AudioContext || window.webkitAudioContext)();
-	var media_stream = audioContext.createMediaStreamSource(stream);
+	var stream = audioContext.createMediaStreamSource(mediaStream);
 
 	var strobes = jQuery("canvas.strobe");
 
 	for ( var i = 0; i < strobes.length; i++ ) {
-		active_strobes.push(init_strobe(strobes[i],media_stream,audioContext));
+		active_strobes.push(init_strobe(strobes[i],stream,audioContext));
 	};
 
 	draw_strobes();
 }
 
-function init_strobe (canvas,media_stream,audioContext) {
+function patch_nodes () {
+	Array.prototype.reduce.call(arguments, function (i,j) { i && i.connect(j); return j });
+}
+
+function init_strobe (canvas,stream,audioContext) {
 	var canvasContext = canvas.getContext('2d');
 
 	var strobe_width = canvas.width;
@@ -50,25 +54,19 @@ function init_strobe (canvas,media_stream,audioContext) {
 	};
 
 	var bandpass = audioContext.createBiquadFilter();
-	var gain = audioContext.createGain();
-	var bit_bucket = audioContext.createGain();
-
 	bandpass.type = 'bandpass';
 	bandpass.frequency.value = strobe_pitch;
 	bandpass.Q.value = 3;
 
+	var gain = audioContext.createGain();
 	gain.gain.value = 100;
 
+	var bit_bucket = audioContext.createGain();
 	bit_bucket.gain.value = 0;
-
-	media_stream.connect(bandpass);
-	bandpass.connect(gain);
-	gain.connect(proc);
 
 	// route output of streamprocessor to a null gain node and to the audio destination to force processing to actually happen
 	// apparently a bug in chrome
-	proc.connect(bit_bucket);
-	bit_bucket.connect(audioContext.destination);
+	patch_nodes(stream,bandpass,gain,proc,bit_bucket,audioContext.destination);
 
 	var seg_width = strobe_width / strobe_segments;
 	var image_data = canvasContext.createImageData(strobe_width,strobe_height);

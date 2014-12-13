@@ -71,7 +71,6 @@ function init_strobe (canvas,stream,audioContext) {
 	patch_nodes(stream,bandpass,gain,proc,bit_bucket,audioContext.destination);
 
 	var seg_width = strobe_width / strobe_segments;
-	var image_data = canvasContext.createImageData(strobe_width,strobe_height);
 
 	return {
 		canvas: canvas,
@@ -100,58 +99,31 @@ function init_strobe (canvas,stream,audioContext) {
 				strobe_delta_t -= strobe_period;
 			}
 
-
-
 			// calculate the offset to the first sample of the strobe relative to the saved buffer
-			// Smooth will handle the fractional component of the offset
-			var offset = strobe_delta_t * sample_rate;
-			var offset_int = Math.floor(offset);
-			offset -= offset_int;
+			var offset = Math.floor( strobe_delta_t * sample_rate ); // FIXME restore sub-sub-subpixel interpolation ;-)
 
-			// Smooth needs a non typed array so copy over.
-			// fuck you javascript, why don't typed arrays support slice()?
-			var small_buf;
-			var bufer;
-			if ( offset_int + samples_per_strobe >= buffers[0].length && offset_int < buffers[0].length ) {
-				var diff = offset_int + samples_per_strobe - buffers[0].length;
-				// complex case of strobe sample intersecting with buffer pair boundary...
-				// we could just skip one more strobe period forward i suppose ;-)
-				small_buf = Array.prototype.slice.call(buffers[0], offset_int);
-				Array.prototype.push.apply( small_buf, buffers[1], 0, diff);
-			} else {
-				var buffer = buffers[0];
+			// draw right to left because low pitch =
+			// longer period = offset grows modulu period
+			// which means motion is to the right and by
+			// convention it goes to the left
+			var g = canvasContext.createLinearGradient(strobe_width,0,0,0);
 
-				if ( offset_int >= buffers[0].length ) {
-					offset_int -= buffers[0].length;
-					buffer = buffers[1];
+			for ( var i = 0; i < samples_per_strobe; i++ ) {
+				var b = buffers[0];
+				var j = offset + i;
+
+				if ( j >= b.length ) {
+					j -= b.length;
+					b = buffers[1];
 				}
 
-				small_buf = Array.prototype.slice.call( buffer, offset_int, offset_int + samples_per_strobe );
+				var v = Math.floor( 256 * (1 + b[j])/2 );
+
+				g.addColorStop(i/samples_per_strobe, 'rgb(' + v + ',' + v + ',' + v + ')');
 			}
 
-			if ( small_buf.length >= samples_per_strobe ) {
-				// otherwise low pitch = longer period = offset grows modulu period which means motion is to the right and by convention it goes to the left
-				small_buf.reverse();
-
-				Smooth.deepValidation = false; // FIXME barf
-				var s = Smooth(small_buf); // FIXME config?
-
-				// interpolate the buffer slice into the strobe segments
-				for (var i = 0; i < strobe_segments; i++) {
-					var v = s( offset + i * (samples_per_strobe / strobe_segments) );
-					var alpha = Math.floor(256 * (1+v)/2);
-					for (var col = i * seg_width; col < (i+1) * seg_width; col++) {
-						for ( var row = 0; row < strobe_height; row++ ) {
-							image_data.data[(row * strobe_width + col) * 4 + 3] = alpha;
-						}
-					}
-				}
-
-				canvasContext.putImageData(image_data,0,0);
-			} else {
-				// a real buffer overrun
-				console.log("OH SHIT");
-			}
+			canvasContext.fillStyle = g;
+			canvasContext.fillRect(0,0,strobe_width,strobe_height);
 		}
 	};
 }

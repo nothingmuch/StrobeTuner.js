@@ -1,15 +1,17 @@
 var active_strobes = [];
 
 
-function init_stream (mediaStream) {
-	var audioContext = new (window.AudioContext || window.webkitAudioContext)();
+function init_stream (audioContext, mediaStream) {
 	var stream = audioContext.createMediaStreamSource(mediaStream);
 
-	var strobes = jQuery("canvas.strobe");
+	var strobes = document.querySelectorAll("canvas.strobe");
 
 	for ( var i = 0; i < strobes.length; i++ ) {
 		active_strobes.push(init_strobe(strobes[i],stream,audioContext));
 	};
+
+	var hint = document.getElementById('hint');
+	if ( hint ) hint.style.display = 'none';
 
 	draw_strobes();
 }
@@ -26,14 +28,18 @@ function init_strobe (canvas,stream,audioContext) {
 
 	var strobe_pitch = parseFloat(canvas.getAttribute("class").substr(canvas.getAttribute("class").lastIndexOf("_")+1));
 
-	// FIXME deprecated
-	var proc = audioContext.createScriptProcessor(1024, 1, 1); // FIXME samplerate/bufsize = update frequency?
+	var bufferSize = 1024; // samplerate/bufsize = update frequency
 
-	var buffers = [ new Float32Array(proc.bufferSize), new Float32Array(proc.bufferSize) ];
+	var proc = new AudioWorkletNode(audioContext, 'strobe-processor', {
+		numberOfInputs: 1,
+		numberOfOutputs: 1,
+		outputChannelCount: [1],
+		processorOptions: { bufferSize: bufferSize }
+	});
+
+	var buffers = [ new Float32Array(bufferSize), new Float32Array(bufferSize) ];
 	var buffer_t = 0;
 	var last_frame = 0;
-	var last_strobe = 0;
-	var strobe_buf;
 
 	var strobe_segments = strobe_width;
 
@@ -44,30 +50,37 @@ function init_strobe (canvas,stream,audioContext) {
 	var strobe_delta_t = 0;
 	var strobe_remainder = 0;
 
-	proc.onaudioprocess = function (e) {
-		// e's buffer is only valid for the duration of the callback, so copy it over
-		// we keep two copies since we read in samples_per_strobe chunks
+	// The worklet ships a filled buffer plus the timestamp of its leading edge.
+	// This mirrors the old onaudioprocess: swap buffers, store the new samples,
+	// and advance the phase offset by the amount of new audio time that arrived.
+	proc.port.onmessage = function (e) {
+		var msg = e.data;
+
 		buffers.reverse();
-		buffers[1].set(e.inputBuffer.getChannelData(0)); // e.inputBuffer.copyFromChanel(buffers[1],0) broken in Chrome?
+		buffers[1].set(new Float32Array(msg.samples));
 
 		// decrement the buffer length from the time based offset of the strobe
-		strobe_delta_t -= ( e.playbackTime - buffer_t );
-		buffer_t = e.playbackTime;
+		strobe_delta_t -= ( msg.time - buffer_t );
+		buffer_t = msg.time;
 	};
 
-	var bandpass = audioContext.createBiquadFilter();
-	bandpass.type = 'bandpass';
-	bandpass.frequency.value = strobe_pitch;
-	bandpass.Q.value = 3;
+	var taps = makeBandpassKernel(strobe_pitch, audioContext.sampleRate, 512);
+	var impulse = audioContext.createBuffer(1, taps.length, audioContext.sampleRate);
+	impulse.copyToChannel(taps, 0);
+	var bandpass = audioContext.createConvolver();
+	bandpass.normalize = false;
+	bandpass.buffer = impulse;
 
 	var gain = audioContext.createGain();
-	gain.gain.value = 100;
+	gain.gain.value = 200;
 
 	var bit_bucket = audioContext.createGain();
 	bit_bucket.gain.value = 0;
 
-	// route output of streamprocessor to a null gain node and to the audio destination to force processing to actually happen
-	// apparently a bug in chrome
+	// Kept from the ScriptProcessorNode version, which needed a path to the
+	// destination to be scheduled at all. Chromium 151 pulls the worklet
+	// without it, but the spec leaves this to the implementation and the sink
+	// costs nothing: the worklet writes no output, so it only carries silence.
 	patch_nodes(stream,bandpass,gain,proc,bit_bucket,audioContext.destination);
 
 	var seg_width = strobe_width / strobe_segments;
@@ -75,7 +88,7 @@ function init_strobe (canvas,stream,audioContext) {
 	return {
 		canvas: canvas,
 		buffers: buffers,
-		processor: proc, // GC bug in Chrome
+		processor: proc,
 		stream: stream, // GC bug in FireFox
 		draw: function (raf_time ) {
 			if ( !buffer_t ) return; // no data yet
@@ -137,18 +150,107 @@ function draw_strobes (raf_time) {
 	requestAnimationFrame(draw_strobes);
 }
 
+// Constructed synchronously in the gesture handler so the autoplay policy sees
+// it as gesture-blessed. The worklet module must finish loading before any
+// AudioWorkletNode naming 'strobe-processor' can be constructed.
 function init_audio () {
-	return (navigator.getUserMedia || navigator.webkitGetUserMedia || navigator.mozGetUserMedia).call(navigator,{
+	var audioContext = new (window.AudioContext || window.webkitAudioContext)();
+
+	var constraints = {
 		"audio": {
-			"mandatory": {
-				"googEchoCancellation": "false",
-				"googAutoGainControl": "true",
-				"googNoiseSuppression": "true",
-				"googHighpassFilter": "false"
-			},
-			"optional": []
-		},
-	},init_stream,console.log);
+			"echoCancellation": false,
+			"autoGainControl": true,
+			"noiseSuppression": false
+		}
+	};
+
+	return Promise.all([
+		audioContext.audioWorklet.addModule('strobe-processor.js'),
+		navigator.mediaDevices.getUserMedia(constraints)
+	]).then(function (results) {
+		return audioContext.resume().then(function () {
+			init_stream(audioContext, results[1]);
+		});
+	}).catch(function (err) {
+		console.log("audio init failed", err);
+	});
 }
 
-jQuery().ready(init_audio);
+// AudioContext starts suspended until a user gesture (autoplay policy), and
+// getUserMedia needs a secure context. Gate startup behind a click.
+function start_on_gesture () {
+	var started = false;
+	function go () {
+		if ( started ) return;
+		started = true;
+		init_audio();
+		document.removeEventListener('click', go);
+		document.removeEventListener('keydown', go);
+	}
+	document.addEventListener('click', go);
+	document.addEventListener('keydown', go);
+}
+
+// --- FIR bandpass helpers ---
+
+function sinc(x) {
+	if (x === 0) return 1;
+	return Math.sin(Math.PI * x) / (Math.PI * x);
+}
+
+function lowpassKernel(cutoff, sampleRate, length) {
+	var h = new Float32Array(length);
+	var fc = cutoff / sampleRate;
+	var M = length - 1;
+
+	for (var n = 0; n < length; n++) {
+		var k = n - M / 2;
+		h[n] = 2 * fc * sinc(2 * fc * k);
+	}
+
+	return h;
+}
+
+function applyHannWindow(h) {
+	var N = h.length;
+
+	for (var n = 0; n < N; n++) {
+		h[n] *= 0.5 * (1 - Math.cos(2 * Math.PI * n / (N - 1)));
+	}
+
+	return h;
+}
+
+function makeBandpassKernel(pitch, sampleRate, length) {
+	var semitone = Math.pow(2, 1 / 12);
+	var lo = lowpassKernel(pitch * semitone, sampleRate, length);
+	var hi = lowpassKernel(pitch / semitone, sampleRate, length);
+
+	var h = new Float32Array(length);
+
+	for (var i = 0; i < length; i++) {
+		h[i] = lo[i] - hi[i];
+	}
+
+	applyHannWindow(h);
+
+	// Normalize to unity gain at the center frequency so that all
+	// strings come through at the same level regardless of bandwidth.
+	var w = 2 * Math.PI * pitch / sampleRate;
+	var re = 0;
+	var im = 0;
+	for (var i = 0; i < length; i++) {
+		re += h[i] * Math.cos(w * i);
+		im -= h[i] * Math.sin(w * i);
+	}
+	var mag = Math.sqrt(re * re + im * im);
+	if (mag > 0) {
+		for (var i = 0; i < length; i++) {
+			h[i] /= mag;
+		}
+	}
+
+	return h;
+}
+
+document.addEventListener('DOMContentLoaded', start_on_gesture);

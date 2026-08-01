@@ -284,10 +284,11 @@ function createStrobeDisplay(canvas, pitch, audioState, stringIndex, stringCount
 				strobe_delta_t += strobe_period;
 			}
 			var buffers = audioState.buffers;
-			while ( strobe_delta_t * sample_rate + samples_per_strobe > 2 * buffers[0].length ) {
+			while ( strobe_delta_t >= 0 && strobe_delta_t * sample_rate + samples_per_strobe > 2 * buffers[0].length ) {
 				// console.log("overrun");
 				strobe_delta_t -= strobe_period;
 			}
+			if ( strobe_delta_t < 0 ) strobe_delta_t = 0;
 
 			audioState.setStrobeDeltaT(strobe_delta_t);
 

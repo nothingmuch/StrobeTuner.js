@@ -162,16 +162,68 @@ function createStrobe(audioContext, source, canvas, pitch) {
 }
 
 
+function buildPresetSelector() {
+	var select = document.getElementById('preset-select');
+	if ( !select ) return;
+
+	for ( var i = 0; i < TUNING_PRESETS.length; i++ ) {
+		var opt = document.createElement('option');
+		opt.value = i;
+		opt.textContent = TUNING_PRESETS[i].name;
+		select.appendChild(opt);
+	}
+}
+
+function applyPreset(presetIndex, audioContext, source) {
+	// Destroy existing strobes
+	while ( active_strobes.length ) {
+		active_strobes[0].destroy();
+	}
+
+	// Clear the container
+	var container = document.getElementById('strobe-container');
+	container.innerHTML = '';
+
+	var preset = TUNING_PRESETS[presetIndex];
+
+	for ( var i = preset.notes.length - 1; i >= 0; i-- ) {
+		var n = preset.notes[i];
+		var pitch = noteFrequency(n.note, n.octave, DEFAULT_REFERENCE_PITCH);
+		var pitchStr = pitch.toFixed(2).replace(/0$/, '').replace(/\.$/, '.0');
+
+		var wrapper = document.createElement('div');
+		wrapper.className = 'strobe-row';
+
+		var label = document.createElement('span');
+		label.className = 'strobe-label';
+		label.textContent = n.note + n.octave;
+		wrapper.appendChild(label);
+
+		var canvas = document.createElement('canvas');
+		canvas.className = 'strobe pitch_' + pitchStr;
+		canvas.width = 512;
+		canvas.height = 100;
+		wrapper.appendChild(canvas);
+
+		container.appendChild(wrapper);
+
+		if ( audioContext && source ) {
+			active_strobes.push(createStrobe(audioContext, source, canvas, pitch));
+		}
+	}
+}
+
 function initTuner(audioContext, mediaStream) {
 	var source = audioContext.createMediaStreamSource(mediaStream);
-	var canvases = document.querySelectorAll("canvas.strobe");
 
-	for ( var i = 0; i < canvases.length; i++ ) {
-		var canvas = canvases[i];
-		var cls = canvas.getAttribute("class");
-		var pitch = parseFloat(cls.substr(cls.lastIndexOf("_")+1));
-		active_strobes.push(createStrobe(audioContext, source, canvas, pitch));
-	}
+	// Store references for preset switching
+	window._tunerAudioContext = audioContext;
+	window._tunerSource = source;
+
+	var select = document.getElementById('preset-select');
+	var presetIndex = select ? parseInt(select.value, 10) : 0;
+
+	applyPreset(presetIndex, audioContext, source);
 
 	var hint = document.getElementById('hint');
 	if ( hint ) hint.style.display = 'none';
@@ -297,4 +349,19 @@ function makeBandpassKernel(pitch, sampleRate, length) {
 	return h;
 }
 
-document.addEventListener('DOMContentLoaded', start_on_gesture);
+document.addEventListener('DOMContentLoaded', function () {
+	buildPresetSelector();
+
+	// Create canvases for the default preset (before audio starts)
+	applyPreset(0, null, null);
+
+	var select = document.getElementById('preset-select');
+	if ( select ) {
+		select.addEventListener('change', function () {
+			var idx = parseInt(select.value, 10);
+			applyPreset(idx, window._tunerAudioContext || null, window._tunerSource || null);
+		});
+	}
+
+	start_on_gesture();
+});

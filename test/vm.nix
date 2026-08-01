@@ -18,7 +18,7 @@ let
 
   site = pkgs.runCommand "strobetuner-site" { } ''
     mkdir -p $out
-    cp ${self}/index.html ${self}/tuner.js ${self}/strobe-processor.js $out/
+    cp ${self}/index.html ${self}/pitches.js ${self}/tuner.js ${self}/strobe-processor.js $out/
   '';
 
   suite = pkgs.runCommand "strobetuner-suite" { } ''

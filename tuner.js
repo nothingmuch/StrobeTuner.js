@@ -14,7 +14,52 @@ var pitch_detectedNote = null;
 var pitch_detectedOctave = null;
 var pitch_detectedCents = null;
 var pitch_lastUpdate = 0;
+var pitch_enabled = true;
 var pitch_analyser = null;
+
+
+var SETTINGS_KEY = 'strobetuner-settings';
+var SETTINGS_DEFAULTS = {
+	preset: 0,
+	gain: 200,
+	filterWidth: 1.0,
+	filterTaps: 512,
+	referencePitch: 440,
+	brightness: 50,
+	contrast: 50,
+	pitchEnabled: true
+};
+
+function loadSettings() {
+	try {
+		var json = localStorage.getItem(SETTINGS_KEY);
+		if ( json ) return JSON.parse(json);
+	} catch (e) {}
+	return null;
+}
+
+function saveSettings() {
+	var select = document.getElementById('preset-select');
+	var settings = {
+		preset: select ? parseInt(select.value, 10) : 0,
+		gain: tuner_gain,
+		filterWidth: tuner_filterWidth,
+		filterTaps: tuner_filterTaps,
+		referencePitch: DEFAULT_REFERENCE_PITCH,
+		brightness: tuner_brightness,
+		contrast: tuner_contrast,
+		pitchEnabled: pitch_enabled
+	};
+	try {
+		localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+	} catch (e) {}
+}
+
+function resetSettings() {
+	try {
+		localStorage.removeItem(SETTINGS_KEY);
+	} catch (e) {}
+}
 
 
 // --- Pitch detection via AnalyserNode FFT ---
@@ -404,7 +449,9 @@ function draw_strobes (raf_time) {
 	var now = raf_time || 0;
 	if ( now - pitch_lastUpdate > 250 ) {
 		pitch_lastUpdate = now;
-		detectPitchFFT();
+		if ( pitch_enabled ) {
+			detectPitchFFT();
+		}
 		updatePitchDisplay();
 	}
 
@@ -539,31 +586,67 @@ function makeBandpassKernel(pitch, sampleRate, length, semitoneWidth) {
 document.addEventListener('DOMContentLoaded', function () {
 	buildPresetSelector();
 
-	// Create canvases for the default preset (before audio starts)
-	applyPreset(0, null, null);
-
+	// Get all DOM element references up front
 	var select = document.getElementById('preset-select');
+	var gainSlider = document.getElementById('gain-slider');
+	var gainValue = document.getElementById('gain-value');
+	var filterWidthSlider = document.getElementById('filter-width-slider');
+	var filterWidthValue = document.getElementById('filter-width-value');
+	var filterOrderSelect = document.getElementById('filter-order-select');
+	var refPitchInput = document.getElementById('reference-pitch-input');
+	var brightnessSlider = document.getElementById('brightness-slider');
+	var brightnessValue = document.getElementById('brightness-value');
+	var contrastSlider = document.getElementById('contrast-slider');
+	var contrastValue = document.getElementById('contrast-value');
+	var pitchToggle = document.getElementById('pitch-detection-toggle');
+	var pitchDisplay = document.getElementById('pitch-display');
+
+	// Load saved settings
+	var saved = loadSettings();
+	if ( saved ) {
+		if ( saved.gain !== undefined ) tuner_gain = saved.gain;
+		if ( saved.filterWidth !== undefined ) tuner_filterWidth = saved.filterWidth;
+		if ( saved.filterTaps !== undefined ) tuner_filterTaps = saved.filterTaps;
+		if ( saved.referencePitch !== undefined ) DEFAULT_REFERENCE_PITCH = saved.referencePitch;
+		if ( saved.brightness !== undefined ) tuner_brightness = saved.brightness;
+		if ( saved.contrast !== undefined ) tuner_contrast = saved.contrast;
+		if ( saved.pitchEnabled !== undefined ) pitch_enabled = saved.pitchEnabled;
+	}
+	var initialPreset = (saved && saved.preset !== undefined) ? saved.preset : 0;
+
+	// Sync UI elements with loaded values
+	if ( gainSlider ) { gainSlider.value = tuner_gain; if ( gainValue ) gainValue.textContent = tuner_gain; }
+	if ( filterWidthSlider ) { filterWidthSlider.value = tuner_filterWidth; if ( filterWidthValue ) filterWidthValue.textContent = tuner_filterWidth; }
+	if ( filterOrderSelect ) filterOrderSelect.value = tuner_filterTaps;
+	if ( refPitchInput ) refPitchInput.value = DEFAULT_REFERENCE_PITCH;
+	if ( brightnessSlider ) { brightnessSlider.value = tuner_brightness; if ( brightnessValue ) brightnessValue.textContent = tuner_brightness; }
+	if ( contrastSlider ) { contrastSlider.value = tuner_contrast; if ( contrastValue ) contrastValue.textContent = tuner_contrast; }
+	if ( pitchToggle ) pitchToggle.checked = pitch_enabled;
+	if ( pitchDisplay && !pitch_enabled ) pitchDisplay.style.display = 'none';
+	if ( select ) select.value = initialPreset;
+
+	// Create canvases for the default preset (before audio starts)
+	applyPreset(initialPreset, null, null);
+
 	if ( select ) {
 		select.addEventListener('change', function () {
 			var idx = parseInt(select.value, 10);
 			applyPreset(idx, tuner_audioContext, tuner_source);
+			saveSettings();
 		});
 	}
 
 	// Gain slider
-	var gainSlider = document.getElementById('gain-slider');
-	var gainValue = document.getElementById('gain-value');
 	if ( gainSlider ) {
 		gainSlider.addEventListener('input', function () {
 			tuner_gain = parseFloat(gainSlider.value);
 			if ( gainValue ) gainValue.textContent = tuner_gain;
 			updateAllGains(tuner_gain);
+			saveSettings();
 		});
 	}
 
 	// Filter width slider
-	var filterWidthSlider = document.getElementById('filter-width-slider');
-	var filterWidthValue = document.getElementById('filter-width-value');
 	if ( filterWidthSlider ) {
 		filterWidthSlider.addEventListener('change', function () {
 			tuner_filterWidth = parseFloat(filterWidthSlider.value);
@@ -571,11 +654,11 @@ document.addEventListener('DOMContentLoaded', function () {
 			if ( tuner_audioContext ) {
 				rebuildConvolvers(tuner_audioContext);
 			}
+			saveSettings();
 		});
 	}
 
 	// Filter order select
-	var filterOrderSelect = document.getElementById('filter-order-select');
 	if ( filterOrderSelect ) {
 		filterOrderSelect.addEventListener('change', function () {
 			tuner_filterTaps = parseInt(filterOrderSelect.value, 10);
@@ -583,11 +666,11 @@ document.addEventListener('DOMContentLoaded', function () {
 				var presetIndex = select ? parseInt(select.value, 10) : 0;
 				applyPreset(presetIndex, tuner_audioContext, tuner_source);
 			}
+			saveSettings();
 		});
 	}
 
 	// Reference pitch input
-	var refPitchInput = document.getElementById('reference-pitch-input');
 	if ( refPitchInput ) {
 		refPitchInput.addEventListener('change', function () {
 			var val = parseFloat(refPitchInput.value);
@@ -597,27 +680,75 @@ document.addEventListener('DOMContentLoaded', function () {
 					var presetIndex = select ? parseInt(select.value, 10) : 0;
 					applyPreset(presetIndex, tuner_audioContext, tuner_source);
 				}
+				saveSettings();
 			}
 		});
 	}
 
 	// Brightness slider
-	var brightnessSlider = document.getElementById('brightness-slider');
-	var brightnessValue = document.getElementById('brightness-value');
 	if ( brightnessSlider ) {
 		brightnessSlider.addEventListener('input', function () {
 			tuner_brightness = parseFloat(brightnessSlider.value);
 			if ( brightnessValue ) brightnessValue.textContent = tuner_brightness;
+			saveSettings();
 		});
 	}
 
 	// Contrast slider
-	var contrastSlider = document.getElementById('contrast-slider');
-	var contrastValue = document.getElementById('contrast-value');
 	if ( contrastSlider ) {
 		contrastSlider.addEventListener('input', function () {
 			tuner_contrast = parseFloat(contrastSlider.value);
 			if ( contrastValue ) contrastValue.textContent = tuner_contrast;
+			saveSettings();
+		});
+	}
+
+	// Pitch detection toggle
+	if ( pitchToggle ) {
+		pitchToggle.addEventListener('change', function () {
+			pitch_enabled = pitchToggle.checked;
+			if ( !pitch_enabled ) {
+				pitch_detectedNote = null;
+				pitch_detectedOctave = null;
+				pitch_detectedCents = null;
+				updatePitchDisplay();
+			}
+			if ( pitchDisplay ) {
+				pitchDisplay.style.display = pitch_enabled ? '' : 'none';
+			}
+			saveSettings();
+		});
+	}
+
+	// Reset settings button
+	var resetBtn = document.getElementById('reset-settings');
+	if ( resetBtn ) {
+		resetBtn.addEventListener('click', function () {
+			resetSettings();
+			// Restore defaults
+			tuner_gain = SETTINGS_DEFAULTS.gain;
+			tuner_filterWidth = SETTINGS_DEFAULTS.filterWidth;
+			tuner_filterTaps = SETTINGS_DEFAULTS.filterTaps;
+			DEFAULT_REFERENCE_PITCH = SETTINGS_DEFAULTS.referencePitch;
+			tuner_brightness = SETTINGS_DEFAULTS.brightness;
+			tuner_contrast = SETTINGS_DEFAULTS.contrast;
+			pitch_enabled = SETTINGS_DEFAULTS.pitchEnabled;
+
+			// Sync UI
+			if ( gainSlider ) { gainSlider.value = tuner_gain; if ( gainValue ) gainValue.textContent = tuner_gain; }
+			if ( filterWidthSlider ) { filterWidthSlider.value = tuner_filterWidth; if ( filterWidthValue ) filterWidthValue.textContent = tuner_filterWidth; }
+			if ( filterOrderSelect ) filterOrderSelect.value = tuner_filterTaps;
+			if ( refPitchInput ) refPitchInput.value = DEFAULT_REFERENCE_PITCH;
+			if ( brightnessSlider ) { brightnessSlider.value = tuner_brightness; if ( brightnessValue ) brightnessValue.textContent = tuner_brightness; }
+			if ( contrastSlider ) { contrastSlider.value = tuner_contrast; if ( contrastValue ) contrastValue.textContent = tuner_contrast; }
+			if ( pitchToggle ) pitchToggle.checked = pitch_enabled;
+			if ( pitchDisplay ) pitchDisplay.style.display = '';
+			if ( select ) { select.value = 0; }
+
+			// Apply
+			updateAllGains(tuner_gain);
+			if ( tuner_audioContext ) rebuildConvolvers(tuner_audioContext);
+			applyPreset(0, tuner_audioContext, tuner_source);
 		});
 	}
 

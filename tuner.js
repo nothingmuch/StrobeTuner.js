@@ -6,6 +6,8 @@ var tuner_wakeLock = null;
 var tuner_gain = 200;
 var tuner_filterWidth = 1.0;
 var tuner_filterTaps = 512;
+var tuner_brightness = 50;
+var tuner_contrast = 50;
 
 
 function createStrobeAudio(audioContext, source, pitch) {
@@ -81,7 +83,8 @@ function createStrobeAudio(audioContext, source, pitch) {
 }
 
 
-function createStrobeDisplay(canvas, pitch, audioState) {
+function createStrobeDisplay(canvas, pitch, audioState, stringIndex, stringCount) {
+	var hue = stringCount > 0 ? (stringIndex * 360 / stringCount) : 0;
 	var canvasContext = canvas.getContext('2d');
 
 	var strobe_width = canvas.width;
@@ -142,9 +145,15 @@ function createStrobeDisplay(canvas, pitch, audioState) {
 					b = buffers[1];
 				}
 
-				var v = Math.floor( 256 * (1 + b[j])/2 );
+				var amplitude = (1 + b[j]) / 2;
 
-				g.addColorStop(i/samples_per_strobe, 'rgb(' + v + ',' + v + ',' + v + ')');
+				var brightness = tuner_brightness / 50;
+				var contrast = tuner_contrast / 50;
+				var lightness = 50 * brightness + (amplitude - 0.5) * 100 * contrast;
+				if ( lightness < 0 ) lightness = 0;
+				if ( lightness > 100 ) lightness = 100;
+
+				g.addColorStop(i/samples_per_strobe, 'hsl(' + hue + ',70%,' + lightness + '%)');
 			}
 
 			canvasContext.fillStyle = g;
@@ -154,9 +163,9 @@ function createStrobeDisplay(canvas, pitch, audioState) {
 }
 
 
-function createStrobe(audioContext, source, canvas, pitch) {
+function createStrobe(audioContext, source, canvas, pitch, stringIndex, stringCount) {
 	var audio = createStrobeAudio(audioContext, source, pitch);
-	var display = createStrobeDisplay(canvas, pitch, audio);
+	var display = createStrobeDisplay(canvas, pitch, audio, stringIndex, stringCount);
 
 	var strobe = {
 		canvas: display.canvas,
@@ -197,6 +206,7 @@ function applyPreset(presetIndex, audioContext, source) {
 
 	var preset = TUNING_PRESETS[presetIndex];
 
+	var row = 0;
 	for ( var i = preset.notes.length - 1; i >= 0; i-- ) {
 		var n = preset.notes[i];
 		var pitch = noteFrequency(n.note, n.octave, DEFAULT_REFERENCE_PITCH);
@@ -219,8 +229,9 @@ function applyPreset(presetIndex, audioContext, source) {
 		container.appendChild(wrapper);
 
 		if ( audioContext && source ) {
-			active_strobes.push(createStrobe(audioContext, source, canvas, pitch));
+			active_strobes.push(createStrobe(audioContext, source, canvas, pitch, row, preset.notes.length));
 		}
+		row++;
 	}
 }
 
@@ -462,6 +473,26 @@ document.addEventListener('DOMContentLoaded', function () {
 					applyPreset(presetIndex, tuner_audioContext, tuner_source);
 				}
 			}
+		});
+	}
+
+	// Brightness slider
+	var brightnessSlider = document.getElementById('brightness-slider');
+	var brightnessValue = document.getElementById('brightness-value');
+	if ( brightnessSlider ) {
+		brightnessSlider.addEventListener('input', function () {
+			tuner_brightness = parseFloat(brightnessSlider.value);
+			if ( brightnessValue ) brightnessValue.textContent = tuner_brightness;
+		});
+	}
+
+	// Contrast slider
+	var contrastSlider = document.getElementById('contrast-slider');
+	var contrastValue = document.getElementById('contrast-value');
+	if ( contrastSlider ) {
+		contrastSlider.addEventListener('input', function () {
+			tuner_contrast = parseFloat(contrastSlider.value);
+			if ( contrastValue ) contrastValue.textContent = tuner_contrast;
 		});
 	}
 

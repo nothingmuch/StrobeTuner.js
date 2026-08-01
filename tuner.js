@@ -1,6 +1,7 @@
 var active_strobes = [];
 var tuner_audioContext = null;
 var tuner_source = null;
+var tuner_wakeLock = null;
 
 var tuner_gain = 200;
 var tuner_filterWidth = 1.0;
@@ -253,6 +254,9 @@ function initTuner(audioContext, mediaStream) {
 	var hint = document.getElementById('hint');
 	if ( hint ) hint.style.display = 'none';
 
+	requestWakeLock();
+	setupWakeLockVisibility();
+
 	draw_strobes();
 }
 
@@ -269,6 +273,27 @@ function draw_strobes (raf_time) {
 	}
 
 	requestAnimationFrame(draw_strobes);
+}
+
+// Wake lock helpers
+function requestWakeLock() {
+	if ( !('wakeLock' in navigator) ) return;
+	try {
+		navigator.wakeLock.request('screen').then(function (sentinel) {
+			tuner_wakeLock = sentinel;
+			sentinel.addEventListener('release', function () {
+				tuner_wakeLock = null;
+			});
+		}).catch(function () {});
+	} catch (e) {}
+}
+
+function setupWakeLockVisibility() {
+	document.addEventListener('visibilitychange', function () {
+		if ( document.visibilityState === 'visible' && tuner_audioContext ) {
+			requestWakeLock();
+		}
+	});
 }
 
 // Constructed synchronously in the gesture handler so the autoplay policy sees
@@ -404,7 +429,7 @@ document.addEventListener('DOMContentLoaded', function () {
 	var filterWidthSlider = document.getElementById('filter-width-slider');
 	var filterWidthValue = document.getElementById('filter-width-value');
 	if ( filterWidthSlider ) {
-		filterWidthSlider.addEventListener('input', function () {
+		filterWidthSlider.addEventListener('change', function () {
 			tuner_filterWidth = parseFloat(filterWidthSlider.value);
 			if ( filterWidthValue ) filterWidthValue.textContent = tuner_filterWidth;
 			if ( tuner_audioContext ) {
@@ -441,4 +466,11 @@ document.addEventListener('DOMContentLoaded', function () {
 	}
 
 	start_on_gesture();
+
+	// Register service worker for offline support
+	if ( 'serviceWorker' in navigator ) {
+		navigator.serviceWorker.register('sw.js').catch(function (err) {
+			console.log('SW registration failed', err);
+		});
+	}
 });

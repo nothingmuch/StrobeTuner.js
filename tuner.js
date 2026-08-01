@@ -9,6 +9,121 @@ var tuner_filterTaps = 512;
 var tuner_brightness = 50;
 var tuner_contrast = 50;
 
+// --- Pitch detection state ---
+var pitch_detectedNote = null;
+var pitch_detectedOctave = null;
+var pitch_detectedCents = null;
+var pitch_lastUpdate = 0;
+var pitch_analyser = null;
+
+
+// --- Pitch detection via AnalyserNode FFT ---
+
+var pitch_fftBuf = null;
+
+function setupPitchAnalyser(audioContext, source) {
+	var analyser = audioContext.createAnalyser();
+	analyser.fftSize = 4096;
+	analyser.smoothingTimeConstant = 0;
+	source.connect(analyser);
+	pitch_analyser = analyser;
+	pitch_fftBuf = new Float32Array(analyser.frequencyBinCount);
+}
+
+function detectPitchFFT() {
+	if ( !pitch_analyser || !pitch_fftBuf ) return;
+	var analyser = pitch_analyser;
+	var buf = pitch_fftBuf;
+	var len = buf.length;
+	analyser.getFloatFrequencyData(buf);
+
+	var sampleRate = pitch_analyser.context.sampleRate;
+	var binWidth = sampleRate / analyser.fftSize;
+
+	// Search range: 30 Hz (below B0) to 1500 Hz
+	var minBin = Math.ceil(30 / binWidth);
+	var maxBin = Math.floor(1500 / binWidth);
+	if ( maxBin >= len ) maxBin = len - 1;
+
+	// Noise gate: find the overall peak and bail if too quiet
+	var maxVal = -Infinity;
+	for ( var i = minBin; i <= maxBin; i++ ) {
+		if ( buf[i] > maxVal ) maxVal = buf[i];
+	}
+	if ( maxVal < -60 ) {
+		pitch_detectedNote = null;
+		pitch_detectedOctave = null;
+		pitch_detectedCents = null;
+		return;
+	}
+
+	// Harmonic Product Spectrum: for each candidate fundamental,
+	// sum the dB magnitudes at f, 2f, 3f, 4f, 5f. The true
+	// fundamental scores highest because all its harmonics
+	// reinforce it. A harmonic mistaken as fundamental only
+	// gets reinforcement at its own multiples, scoring lower.
+	var numHarmonics = 5;
+	var bestBin = minBin;
+	var bestScore = -Infinity;
+	for ( var i = minBin; i <= maxBin; i++ ) {
+		var score = 0;
+		for ( var h = 1; h <= numHarmonics; h++ ) {
+			var hBin = i * h;
+			if ( hBin >= len ) break;
+			score += buf[hBin];
+		}
+		if ( score > bestScore ) {
+			bestScore = score;
+			bestBin = i;
+		}
+	}
+
+	// Parabolic interpolation for sub-bin accuracy
+	var prev = bestBin > minBin ? buf[bestBin - 1] : buf[bestBin];
+	var next = bestBin < maxBin ? buf[bestBin + 1] : buf[bestBin];
+	var denom = 2 * (prev - 2 * buf[bestBin] + next);
+	var shift = denom !== 0 ? (prev - next) / denom : 0;
+	if ( isNaN(shift) || !isFinite(shift) ) shift = 0;
+
+	var freq = (bestBin + shift) * binWidth;
+
+	var info = nearestNote(freq, DEFAULT_REFERENCE_PITCH);
+	if ( !info.note ) {
+		pitch_detectedNote = null;
+		pitch_detectedOctave = null;
+		pitch_detectedCents = null;
+		return;
+	}
+	pitch_detectedNote = info.note;
+	pitch_detectedOctave = info.octave;
+	pitch_detectedCents = Math.round(info.cents);
+}
+
+function updatePitchDisplay() {
+	var noteEl = document.getElementById('pitch-note');
+	var centsEl = document.getElementById('pitch-cents');
+	if ( !noteEl || !centsEl ) return;
+
+	if ( pitch_detectedNote === null ) {
+		noteEl.textContent = '—';
+		centsEl.textContent = '';
+	} else {
+		// Use first part of compound names like "C#/Db"
+		var name = '' + pitch_detectedNote;
+		var slash = name.indexOf('/');
+		if ( slash !== -1 ) name = name.substring(0, slash);
+		noteEl.textContent = name + pitch_detectedOctave;
+
+		if ( pitch_detectedCents === 0 ) {
+			centsEl.textContent = '±0¢';
+		} else if ( pitch_detectedCents > 0 ) {
+			centsEl.textContent = '+' + pitch_detectedCents + '¢';
+		} else {
+			centsEl.textContent = '\u2212' + Math.abs(pitch_detectedCents) + '¢';
+		}
+	}
+}
+
 
 function createStrobeAudio(audioContext, source, pitch) {
 	var bufferSize = 1024;
@@ -262,6 +377,8 @@ function initTuner(audioContext, mediaStream) {
 
 	applyPreset(presetIndex, audioContext, source);
 
+	setupPitchAnalyser(audioContext, source);
+
 	var hint = document.getElementById('hint');
 	if ( hint ) hint.style.display = 'none';
 
@@ -281,6 +398,14 @@ function draw_strobes (raf_time) {
 	for ( var i = 0; i < active_strobes.length; i++ ) {
 		var strobe = active_strobes[i];
 		strobe.draw(raf_time || 0);
+	}
+
+	// Update pitch display ~15 times per second
+	var now = raf_time || 0;
+	if ( now - pitch_lastUpdate > 250 ) {
+		pitch_lastUpdate = now;
+		detectPitchFFT();
+		updatePitchDisplay();
 	}
 
 	requestAnimationFrame(draw_strobes);

@@ -1,4 +1,10 @@
 var active_strobes = [];
+var tuner_audioContext = null;
+var tuner_source = null;
+
+var tuner_gain = 200;
+var tuner_filterWidth = 1.0;
+var tuner_filterTaps = 512;
 
 
 function createStrobeAudio(audioContext, source, pitch) {
@@ -31,7 +37,7 @@ function createStrobeAudio(audioContext, source, pitch) {
 		buffer_t = msg.time;
 	};
 
-	var taps = makeBandpassKernel(pitch, audioContext.sampleRate, 512);
+	var taps = makeBandpassKernel(pitch, audioContext.sampleRate, tuner_filterTaps, tuner_filterWidth);
 	var impulse = audioContext.createBuffer(1, taps.length, audioContext.sampleRate);
 	impulse.copyToChannel(taps, 0);
 	var bandpass = audioContext.createConvolver();
@@ -39,7 +45,7 @@ function createStrobeAudio(audioContext, source, pitch) {
 	bandpass.buffer = impulse;
 
 	var gain = audioContext.createGain();
-	gain.gain.value = 200;
+	gain.gain.value = tuner_gain;
 
 	var bit_bucket = audioContext.createGain();
 	bit_bucket.gain.value = 0;
@@ -55,6 +61,9 @@ function createStrobeAudio(audioContext, source, pitch) {
 		processor: proc,
 		source: source, // GC bug in FireFox
 		sampleRate: sample_rate,
+		pitch: pitch,
+		gainNode: gain,
+		bandpass: bandpass,
 		getBufferTime: function () { return buffer_t; },
 		getStrobeDeltaT: function () { return strobe_delta_t; },
 		setStrobeDeltaT: function (v) { strobe_delta_t = v; },
@@ -151,6 +160,7 @@ function createStrobe(audioContext, source, canvas, pitch) {
 	var strobe = {
 		canvas: display.canvas,
 		draw: display.draw,
+		audio: audio,
 		destroy: function () {
 			audio.disconnect();
 			var idx = active_strobes.indexOf(strobe);
@@ -189,7 +199,7 @@ function applyPreset(presetIndex, audioContext, source) {
 	for ( var i = preset.notes.length - 1; i >= 0; i-- ) {
 		var n = preset.notes[i];
 		var pitch = noteFrequency(n.note, n.octave, DEFAULT_REFERENCE_PITCH);
-		var pitchStr = pitch.toFixed(2).replace(/0$/, '').replace(/\.$/, '.0');
+		var pitchStr = pitch.toFixed(2).replace(/0$/, '');
 
 		var wrapper = document.createElement('div');
 		wrapper.className = 'strobe-row';
@@ -213,12 +223,27 @@ function applyPreset(presetIndex, audioContext, source) {
 	}
 }
 
+function updateAllGains(value) {
+	for ( var i = 0; i < active_strobes.length; i++ ) {
+		active_strobes[i].audio.gainNode.gain.value = value;
+	}
+}
+
+function rebuildConvolvers(audioContext) {
+	for ( var i = 0; i < active_strobes.length; i++ ) {
+		var audio = active_strobes[i].audio;
+		var taps = makeBandpassKernel(audio.pitch, audioContext.sampleRate, tuner_filterTaps, tuner_filterWidth);
+		var impulse = audioContext.createBuffer(1, taps.length, audioContext.sampleRate);
+		impulse.copyToChannel(taps, 0);
+		audio.bandpass.buffer = impulse;
+	}
+}
+
 function initTuner(audioContext, mediaStream) {
 	var source = audioContext.createMediaStreamSource(mediaStream);
 
-	// Store references for preset switching
-	window._tunerAudioContext = audioContext;
-	window._tunerSource = source;
+	tuner_audioContext = audioContext;
+	tuner_source = source;
 
 	var select = document.getElementById('preset-select');
 	var presetIndex = select ? parseInt(select.value, 10) : 0;
@@ -317,8 +342,9 @@ function applyHannWindow(h) {
 	return h;
 }
 
-function makeBandpassKernel(pitch, sampleRate, length) {
-	var semitone = Math.pow(2, 1 / 12);
+function makeBandpassKernel(pitch, sampleRate, length, semitoneWidth) {
+	if (semitoneWidth === undefined) semitoneWidth = 1.0;
+	var semitone = Math.pow(2, semitoneWidth / 12);
 	var lo = lowpassKernel(pitch * semitone, sampleRate, length);
 	var hi = lowpassKernel(pitch / semitone, sampleRate, length);
 
@@ -359,7 +385,58 @@ document.addEventListener('DOMContentLoaded', function () {
 	if ( select ) {
 		select.addEventListener('change', function () {
 			var idx = parseInt(select.value, 10);
-			applyPreset(idx, window._tunerAudioContext || null, window._tunerSource || null);
+			applyPreset(idx, tuner_audioContext, tuner_source);
+		});
+	}
+
+	// Gain slider
+	var gainSlider = document.getElementById('gain-slider');
+	var gainValue = document.getElementById('gain-value');
+	if ( gainSlider ) {
+		gainSlider.addEventListener('input', function () {
+			tuner_gain = parseFloat(gainSlider.value);
+			if ( gainValue ) gainValue.textContent = tuner_gain;
+			updateAllGains(tuner_gain);
+		});
+	}
+
+	// Filter width slider
+	var filterWidthSlider = document.getElementById('filter-width-slider');
+	var filterWidthValue = document.getElementById('filter-width-value');
+	if ( filterWidthSlider ) {
+		filterWidthSlider.addEventListener('input', function () {
+			tuner_filterWidth = parseFloat(filterWidthSlider.value);
+			if ( filterWidthValue ) filterWidthValue.textContent = tuner_filterWidth;
+			if ( tuner_audioContext ) {
+				rebuildConvolvers(tuner_audioContext);
+			}
+		});
+	}
+
+	// Filter order select
+	var filterOrderSelect = document.getElementById('filter-order-select');
+	if ( filterOrderSelect ) {
+		filterOrderSelect.addEventListener('change', function () {
+			tuner_filterTaps = parseInt(filterOrderSelect.value, 10);
+			if ( tuner_audioContext && tuner_source ) {
+				var presetIndex = select ? parseInt(select.value, 10) : 0;
+				applyPreset(presetIndex, tuner_audioContext, tuner_source);
+			}
+		});
+	}
+
+	// Reference pitch input
+	var refPitchInput = document.getElementById('reference-pitch-input');
+	if ( refPitchInput ) {
+		refPitchInput.addEventListener('change', function () {
+			var val = parseFloat(refPitchInput.value);
+			if ( val >= 400 && val <= 480 ) {
+				DEFAULT_REFERENCE_PITCH = val;
+				if ( tuner_audioContext && tuner_source ) {
+					var presetIndex = select ? parseInt(select.value, 10) : 0;
+					applyPreset(presetIndex, tuner_audioContext, tuner_source);
+				}
+			}
 		});
 	}
 

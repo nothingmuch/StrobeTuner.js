@@ -1,34 +1,8 @@
 var active_strobes = [];
 
 
-function init_stream (audioContext, mediaStream) {
-	var stream = audioContext.createMediaStreamSource(mediaStream);
-
-	var strobes = document.querySelectorAll("canvas.strobe");
-
-	for ( var i = 0; i < strobes.length; i++ ) {
-		active_strobes.push(init_strobe(strobes[i],stream,audioContext));
-	};
-
-	var hint = document.getElementById('hint');
-	if ( hint ) hint.style.display = 'none';
-
-	draw_strobes();
-}
-
-function patch_nodes () {
-	Array.prototype.reduce.call(arguments, function (i,j) { i && i.connect(j); return j });
-}
-
-function init_strobe (canvas,stream,audioContext) {
-	var canvasContext = canvas.getContext('2d');
-
-	var strobe_width = canvas.width;
-	var strobe_height = canvas.height;
-
-	var strobe_pitch = parseFloat(canvas.getAttribute("class").substr(canvas.getAttribute("class").lastIndexOf("_")+1));
-
-	var bufferSize = 1024; // samplerate/bufsize = update frequency
+function createStrobeAudio(audioContext, source, pitch) {
+	var bufferSize = 1024;
 
 	var proc = new AudioWorkletNode(audioContext, 'strobe-processor', {
 		numberOfInputs: 1,
@@ -39,16 +13,9 @@ function init_strobe (canvas,stream,audioContext) {
 
 	var buffers = [ new Float32Array(bufferSize), new Float32Array(bufferSize) ];
 	var buffer_t = 0;
-	var last_frame = 0;
 
-	var strobe_segments = strobe_width;
-
-	var strobe_period = 1/strobe_pitch;
 	var sample_rate = audioContext.sampleRate;
-	var sample_duration = 1/sample_rate;
-	var samples_per_strobe = Math.ceil(strobe_period/sample_duration);
 	var strobe_delta_t = 0;
-	var strobe_remainder = 0;
 
 	// The worklet ships a filled buffer plus the timestamp of its leading edge.
 	// This mirrors the old onaudioprocess: swap buffers, store the new samples,
@@ -64,7 +31,7 @@ function init_strobe (canvas,stream,audioContext) {
 		buffer_t = msg.time;
 	};
 
-	var taps = makeBandpassKernel(strobe_pitch, audioContext.sampleRate, 512);
+	var taps = makeBandpassKernel(pitch, audioContext.sampleRate, 512);
 	var impulse = audioContext.createBuffer(1, taps.length, audioContext.sampleRate);
 	impulse.copyToChannel(taps, 0);
 	var bandpass = audioContext.createConvolver();
@@ -81,16 +48,46 @@ function init_strobe (canvas,stream,audioContext) {
 	// destination to be scheduled at all. Chromium 151 pulls the worklet
 	// without it, but the spec leaves this to the implementation and the sink
 	// costs nothing: the worklet writes no output, so it only carries silence.
-	patch_nodes(stream,bandpass,gain,proc,bit_bucket,audioContext.destination);
+	patch_nodes(source,bandpass,gain,proc,bit_bucket,audioContext.destination);
 
-	var seg_width = strobe_width / strobe_segments;
+	var state = {
+		buffers: buffers,
+		processor: proc,
+		source: source, // GC bug in FireFox
+		sampleRate: sample_rate,
+		getBufferTime: function () { return buffer_t; },
+		getStrobeDeltaT: function () { return strobe_delta_t; },
+		setStrobeDeltaT: function (v) { strobe_delta_t = v; },
+		disconnect: function () {
+			proc.port.onmessage = null;
+			proc.disconnect();
+			gain.disconnect();
+			bandpass.disconnect();
+			bit_bucket.disconnect();
+		}
+	};
+
+	return state;
+}
+
+
+function createStrobeDisplay(canvas, pitch, audioState) {
+	var canvasContext = canvas.getContext('2d');
+
+	var strobe_width = canvas.width;
+	var strobe_height = canvas.height;
+
+	var strobe_period = 1/pitch;
+	var sample_rate = audioState.sampleRate;
+	var sample_duration = 1/sample_rate;
+	var samples_per_strobe = Math.ceil(strobe_period/sample_duration);
+	var strobe_remainder = 0;
+	var last_frame = 0;
 
 	return {
 		canvas: canvas,
-		buffers: buffers,
-		processor: proc,
-		stream: stream, // GC bug in FireFox
-		draw: function (raf_time ) {
+		draw: function (raf_time) {
+			var buffer_t = audioState.getBufferTime();
 			if ( !buffer_t ) return; // no data yet
 
 			// calculate how much time the strobe has gone forward since the last frame
@@ -98,6 +95,8 @@ function init_strobe (canvas,stream,audioContext) {
 			if ( frame_duration && frame_duration < strobe_period ) return; // plausible for bass or lower registers of piano
 
 			last_frame = raf_time;
+
+			var strobe_delta_t = audioState.getStrobeDeltaT();
 
 			// skip to the present, the remainder tracking is for better responsiveness
 			// underruns are normal at first and with smaller buffer sizes, but don't really matter since all we really care about is phase information
@@ -107,10 +106,13 @@ function init_strobe (canvas,stream,audioContext) {
 				// console.log("underrun");
 				strobe_delta_t += strobe_period;
 			}
+			var buffers = audioState.buffers;
 			while ( strobe_delta_t * sample_rate + samples_per_strobe > 2 * buffers[0].length ) {
 				// console.log("overrun");
 				strobe_delta_t -= strobe_period;
 			}
+
+			audioState.setStrobeDeltaT(strobe_delta_t);
 
 			// calculate the offset to the first sample of the strobe relative to the saved buffer
 			var offset = Math.floor( strobe_delta_t * sample_rate ); // FIXME restore sub-sub-subpixel interpolation ;-)
@@ -141,6 +143,48 @@ function init_strobe (canvas,stream,audioContext) {
 	};
 }
 
+
+function createStrobe(audioContext, source, canvas, pitch) {
+	var audio = createStrobeAudio(audioContext, source, pitch);
+	var display = createStrobeDisplay(canvas, pitch, audio);
+
+	var strobe = {
+		canvas: display.canvas,
+		draw: display.draw,
+		destroy: function () {
+			audio.disconnect();
+			var idx = active_strobes.indexOf(strobe);
+			if (idx !== -1) active_strobes.splice(idx, 1);
+		}
+	};
+
+	return strobe;
+}
+
+
+function initTuner(audioContext, mediaStream) {
+	var source = audioContext.createMediaStreamSource(mediaStream);
+	var canvases = document.querySelectorAll("canvas.strobe");
+
+	for ( var i = 0; i < canvases.length; i++ ) {
+		var canvas = canvases[i];
+		var cls = canvas.getAttribute("class");
+		var pitch = parseFloat(cls.substr(cls.lastIndexOf("_")+1));
+		active_strobes.push(createStrobe(audioContext, source, canvas, pitch));
+	}
+
+	var hint = document.getElementById('hint');
+	if ( hint ) hint.style.display = 'none';
+
+	draw_strobes();
+}
+
+
+function patch_nodes () {
+	Array.prototype.reduce.call(arguments, function (i,j) { i && i.connect(j); return j });
+}
+
+
 function draw_strobes (raf_time) {
 	for ( var i = 0; i < active_strobes.length; i++ ) {
 		var strobe = active_strobes[i];
@@ -169,7 +213,7 @@ function init_audio () {
 		navigator.mediaDevices.getUserMedia(constraints)
 	]).then(function (results) {
 		return audioContext.resume().then(function () {
-			init_stream(audioContext, results[1]);
+			initTuner(audioContext, results[1]);
 		});
 	}).catch(function (err) {
 		console.log("audio init failed", err);

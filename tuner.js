@@ -171,7 +171,11 @@ function updatePitchDisplay() {
 
 
 function createStrobeAudio(audioContext, source, pitch) {
-	var bufferSize = 1024;
+	// The draw loop reads across a pair of buffers, so 2*bufferSize must
+	// comfortably exceed one strobe period (sampleRate/pitch samples).
+	// Use two full periods as the buffer size so the pair holds four,
+	// giving plenty of headroom for the overrun/underrun correction.
+	var bufferSize = Math.max(1024, Math.ceil(2 * audioContext.sampleRate / pitch));
 
 	var proc = new AudioWorkletNode(audioContext, 'strobe-processor', {
 		numberOfInputs: 1,
